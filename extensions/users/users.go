@@ -8,6 +8,16 @@ import (
 
 	"github.com/rancher/norman/types"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	authzv1 "k8s.io/api/authorization/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/selection"
+	kwait "k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
+
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	extauthz "github.com/rancher/shepherd/extensions/kubeapi/authorization"
@@ -36,8 +46,8 @@ var timeout = int64(60 * 3)
 // UserConfig sets and returns username and password of the user
 func UserConfig() (user *management.User) {
 	enabled := true
-	var username = namegen.AppendRandomString("testuser-")
-	var testpassword = password.GenerateUserPassword("testpass-")
+	username := namegen.AppendRandomString("testuser-")
+	testpassword := password.GenerateUserPassword("testpass-")
 	user = &management.User{
 		Username: username,
 		Password: testpassword,
@@ -76,15 +86,20 @@ func CreateUserWithRole(rancherClient *rancher.Client, user *management.User, ro
 // If a list of ResourceAttributes is given, then the function blocks until all
 // attributes are allowed by SelfSubjectAccessReviews OR the function times out.
 func AddProjectMember(rancherClient *rancher.Client, project *management.Project,
-	user *management.User, projectRole string, attrs []*authzv1.ResourceAttributes) error {
-
+	user *management.User, projectRole string, attrs []*authzv1.ResourceAttributes,
+) error {
 	role := &management.ProjectRoleTemplateBinding{
 		ProjectID:       project.ID,
 		UserPrincipalID: user.PrincipalIDs[0],
 		RoleTemplateID:  projectRole,
 	}
 
-	name := strings.Split(project.ID, ":")[1]
+	projectID := strings.Split(project.ID, ":")
+	namespace := string(projectID[0])
+	if project.BackingNamespace != "" {
+		namespace = project.BackingNamespace
+	}
+	name := string(projectID[1])
 
 	adminClient, err := rancher.NewClient(rancherClient.RancherConfig.AdminToken, rancherClient.Session)
 	if err != nil {
@@ -92,7 +107,7 @@ func AddProjectMember(rancherClient *rancher.Client, project *management.Project
 	}
 
 	opts := metav1.ListOptions{
-		FieldSelector:  "metadata.name=" + name,
+		FieldSelector:  fmt.Sprintf("metadata.name=%v,metadata.namespace=%v", name, namespace),
 		TimeoutSeconds: &timeout,
 	}
 	watchInterface, err := adminClient.GetManagementWatchInterface(management.ProjectType, opts)
@@ -184,8 +199,8 @@ func RemoveProjectMember(rancherClient *rancher.Client, user *management.User) e
 // If a list of ResourceAttributes is given, then the function blocks until all
 // attributes are allowed by SelfSubjectAccessReviews OR the function times out.
 func AddClusterRoleToUser(rancherClient *rancher.Client, cluster *management.Cluster,
-	user *management.User, clusterRole string, attrs []*authzv1.ResourceAttributes) error {
-
+	user *management.User, clusterRole string, attrs []*authzv1.ResourceAttributes,
+) error {
 	role := &management.ClusterRoleTemplateBinding{
 		ClusterID:       cluster.Resource.ID,
 		UserPrincipalID: user.PrincipalIDs[0],
